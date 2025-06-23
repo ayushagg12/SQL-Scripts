@@ -8,17 +8,17 @@ BEGIN
     DECLARE tbl VARCHAR(255);
     DECLARE col VARCHAR(255);
 
-    -- Cursor to iterate over all char/varchar/text columns
+
     DECLARE cur CURSOR FOR
         SELECT TABLE_NAME, COLUMN_NAME
         FROM INFORMATION_SCHEMA.COLUMNS
         WHERE TABLE_SCHEMA = DATABASE()
           AND DATA_TYPE IN ('char', 'varchar', 'text', 'longtext');
 
-    -- Continue handler
+    
     DECLARE CONTINUE HANDLER FOR NOT FOUND SET done = 1;
 
-    -- Temporary table to store results
+    
     CREATE TEMPORARY TABLE IF NOT EXISTS phone_matches (
         table_name VARCHAR(255),
         column_name VARCHAR(255),
@@ -35,7 +35,7 @@ BEGIN
             LEAVE read_loop;
         END IF;
 
-        -- Build dynamic SQL query
+        
         SET @sql = CONCAT(
     'INSERT INTO phone_matches(table_name, column_name, phone_number) ',
     'SELECT ''', tbl, ''', ''', col, ''', REGEXP_SUBSTR(`', col, '`, ''(^|[^0-9])(\\\\+91\\\\-?|91|0)?[6-9][0-9]{9}'') AS phone ',
@@ -51,25 +51,25 @@ BEGIN
 
     CLOSE cur;
 
-    -- Output the result
+    
 -- Output the result to MySQL CLI
 SELECT * FROM phone_matches ORDER BY table_name, column_name;
     -- Export to file
 SET @outfile = '/tmp/phone_numbers.csv';
 
--- Remove existing file if needed
+
 SET @stmt = CONCAT('DROP TABLE IF EXISTS outfile_helper');
 PREPARE stmt FROM @stmt;
 EXECUTE stmt;
 DEALLOCATE PREPARE stmt;
 
--- Create helper table to enforce field order and headers
+
 CREATE TABLE outfile_helper AS
 SELECT 'table_name' AS table_name, 'column_name' AS column_name, 'phone_number' AS phone_number
 UNION ALL
 SELECT table_name, column_name, phone_number FROM phone_matches;
 
--- Export to CSV
+
 SELECT * FROM outfile_helper
 INTO OUTFILE @outfile
 FIELDS TERMINATED BY ',' OPTIONALLY ENCLOSED BY '"'
