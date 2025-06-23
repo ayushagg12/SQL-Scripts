@@ -103,7 +103,7 @@ BEGIN
         END;
     END LOOP;
 
-    -- Final summary
+    
     DBMS_OUTPUT.PUT_LINE('========================================');
     DBMS_OUTPUT.PUT_LINE('Total Tables Found,' || v_total_tables);
     DBMS_OUTPUT.PUT_LINE('Successfully Checked,' || v_successful_checks);
