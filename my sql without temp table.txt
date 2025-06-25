@@ -83,7 +83,7 @@ BEGIN
     
     SELECT REPLACE(result, '\n', '\r\n') AS CSV_Output;  -- For better formatting in CLI
 
-    -- Summary
+   
     SELECT '========================================' AS SummaryLine;
     SELECT CONCAT('Total Tables Scanned: ', v_total_tables) AS SummaryLine;
     SELECT CONCAT('Successfully Checked: ', v_successful_checks) AS SummaryLine;
