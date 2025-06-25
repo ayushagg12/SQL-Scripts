@@ -8,14 +8,14 @@ BEGIN
     DECLARE tbl VARCHAR(255);
     DECLARE col_count INT;
 
-    -- Cursor to iterate over tables only
+    
     DECLARE cur CURSOR FOR
         SELECT TABLE_NAME
         FROM INFORMATION_SCHEMA.TABLES
         WHERE TABLE_SCHEMA = DATABASE()
           AND TABLE_TYPE = 'BASE TABLE';
 
-    -- Handlers
+    
     DECLARE CONTINUE HANDLER FOR NOT FOUND SET done = 1;
     DECLARE EXIT HANDLER FOR SQLEXCEPTION
     BEGIN
@@ -23,7 +23,7 @@ BEGIN
         ROLLBACK;
     END;
 
-    -- Result collection
+    
     DECLARE result TEXT DEFAULT '';
 
     OPEN cur;
@@ -34,7 +34,7 @@ BEGIN
             LEAVE read_loop;
         END IF;
 
-        -- Get all column names and count for the current table
+        
         SELECT GROUP_CONCAT(CONCAT('`', COLUMN_NAME, '`') ORDER BY ORDINAL_POSITION),
                COUNT(*) INTO @columns, col_count
         FROM INFORMATION_SCHEMA.COLUMNS
@@ -75,7 +75,7 @@ BEGIN
 
     CLOSE cur;
 
-    -- Output final result
+    
     SELECT REPLACE(result, '\n', '\r\n') AS CSV_Output;
 
 END$$
