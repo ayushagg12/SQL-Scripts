@@ -8,14 +8,14 @@ BEGIN
     DECLARE tbl VARCHAR(255);
     DECLARE col VARCHAR(255);
 
-    -- Summary variables
+    
     DECLARE v_total_tables INT DEFAULT 0;
     DECLARE v_successful_checks INT DEFAULT 0;
     DECLARE v_tables_with_match INT DEFAULT 0;
     DECLARE v_tables_without_match INT DEFAULT 0;
     DECLARE v_failed_checks INT DEFAULT 0;
 
-    -- Result collection
+   
     CREATE TEMPORARY TABLE IF NOT EXISTS found_phones (
         table_name VARCHAR(255),
         column_name VARCHAR(255),
@@ -24,14 +24,14 @@ BEGIN
 
     TRUNCATE TABLE found_phones;
 
-    -- Cursor to iterate over text-based columns
+    
     DECLARE cur CURSOR FOR
         SELECT TABLE_NAME, COLUMN_NAME
         FROM INFORMATION_SCHEMA.COLUMNS
         WHERE TABLE_SCHEMA = DATABASE()
           AND DATA_TYPE IN ('char', 'varchar', 'text', 'longtext');
 
-    -- Handlers
+    
     DECLARE CONTINUE HANDLER FOR NOT FOUND SET done = 1;
     DECLARE EXIT HANDLER FOR SQLEXCEPTION
     BEGIN
@@ -83,7 +83,7 @@ BEGIN
 
     CLOSE cur;
 
-    -- Output Results
+    
     SELECT * FROM found_phones ORDER BY table_name, column_name;
 
     -- Summary
