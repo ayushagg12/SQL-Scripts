@@ -8,24 +8,24 @@ BEGIN
     DECLARE tbl VARCHAR(255);
     DECLARE col VARCHAR(255);
 
-    -- Summary variables
+    
     DECLARE v_total_tables INT DEFAULT 0;
     DECLARE v_successful_checks INT DEFAULT 0;
     DECLARE v_tables_with_match INT DEFAULT 0;
     DECLARE v_tables_without_match INT DEFAULT 0;
     DECLARE v_failed_checks INT DEFAULT 0;
 
-    -- Result collection (CSV format)
+    
     DECLARE result TEXT DEFAULT 'table_name,column_name,phone_number';  -- Header row
 
-    -- Cursor to iterate over text-based columns
+    
     DECLARE cur CURSOR FOR
         SELECT TABLE_NAME, COLUMN_NAME
         FROM INFORMATION_SCHEMA.COLUMNS
         WHERE TABLE_SCHEMA = DATABASE()
           AND DATA_TYPE IN ('char', 'varchar', 'text', 'longtext');
 
-    -- Handlers
+    
     DECLARE CONTINUE HANDLER FOR NOT FOUND SET done = 1;
     DECLARE EXIT HANDLER FOR SQLEXCEPTION
     BEGIN
@@ -43,7 +43,7 @@ BEGIN
 
         SET v_total_tables = v_total_tables + 1;
 
-        -- Build dynamic SQL to extract matching phone numbers
+        
         SET @sql = CONCAT(
             "SELECT GROUP_CONCAT(CONCAT('\"", tbl, "\",\"\", col, "\",\"\", num) SEPARATOR '\\n') ",
             "FROM ( ",
@@ -80,7 +80,7 @@ BEGIN
 
     CLOSE cur;
 
-    -- Output final result as CSV
+    
     SELECT REPLACE(result, '\n', '\r\n') AS CSV_Output;  -- For better formatting in CLI
 
     -- Summary
