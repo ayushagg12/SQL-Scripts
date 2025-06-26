@@ -1,24 +1,24 @@
-DROP TEMPORARY TABLE IF EXISTS table_data_output;
-CREATE TEMPORARY TABLE table_data_output (
-    output_line TEXT
-);
-
--- Procedure to populate the temporary table
 DELIMITER //
+
 CREATE PROCEDURE GenerateTableDataCSV()
 BEGIN
     DECLARE done INT DEFAULT FALSE;
     DECLARE tbl_name VARCHAR(255);
-    DECLARE col_name VARCHAR(255);
     DECLARE col_list TEXT DEFAULT '';
     DECLARE query TEXT;
     
     -- Cursor for all tables in the current database
     DECLARE table_cursor CURSOR FOR 
         SELECT table_name FROM information_schema.tables 
-        WHERE table_schema = DATABASE();
+        WHERE table_schema = DATABASE() AND table_type = 'BASE TABLE';
     
     DECLARE CONTINUE HANDLER FOR NOT FOUND SET done = TRUE;
+    
+    -- Create temporary table (works in MySQL 8.0)
+    DROP TEMPORARY TABLE IF EXISTS table_data_output;
+    CREATE TEMPORARY TABLE table_data_output (
+        output_line TEXT
+    );
     
     OPEN table_cursor;
     
@@ -32,12 +32,15 @@ BEGIN
         SET col_list = '';
         
         -- Get all columns for the current table
-        SELECT GROUP_CONCAT(CONCAT(
-            '''', column_name, ''', ',
-            'IFNULL(CONCAT(''"'', REPLACE(IFNULL(', column_name, ', ''NULL''), ''"'', ''""''), ''"''), ''NULL'')'
-        ) SEPARATOR ', ') INTO col_list
+        SELECT GROUP_CONCAT(
+            CONCAT(
+                '''"', COLUMN_NAME, '"'', ',
+                'IFNULL(CONCAT(''"'', REPLACE(IFNULL(`', COLUMN_NAME, '`, ''NULL''), ''"'', ''""''), ''"''), ''"NULL"'')'
+            ) SEPARATOR ', '
+        ) INTO col_list
         FROM information_schema.columns
-        WHERE table_schema = DATABASE() AND table_name = tbl_name;
+        WHERE table_schema = DATABASE() AND table_name = tbl_name
+        ORDER BY ORDINAL_POSITION;
         
         -- Build and execute the dynamic query
         SET @query = CONCAT(
@@ -45,7 +48,7 @@ BEGIN
             'SELECT CONCAT_WS('','', ',
             CONCAT('''"', tbl_name, '"'''), ', ',
             col_list,
-            ') FROM ', tbl_name
+            ') FROM `', tbl_name, '`'
         );
         
         PREPARE stmt FROM @query;
@@ -58,7 +61,8 @@ BEGIN
     -- Display the results
     SELECT output_line FROM table_data_output;
     
-    -- Clean up
-    DROP TEMPORARY TABLE table_data_output;
+    -- Clean up (optional as temp tables are session-scoped)
+    DROP TEMPORARY TABLE IF EXISTS table_data_output;
 END //
+
 DELIMITER ;
