@@ -1,83 +1,64 @@
-DELIMITER $$
+DROP TEMPORARY TABLE IF EXISTS table_data_output;
+CREATE TEMPORARY TABLE table_data_output (
+    output_line TEXT
+);
 
-DROP PROCEDURE IF EXISTS export_all_column_data$$
-
-CREATE PROCEDURE export_all_column_data()
+-- Procedure to populate the temporary table
+DELIMITER //
+CREATE PROCEDURE GenerateTableDataCSV()
 BEGIN
-    DECLARE done INT DEFAULT 0;
-    DECLARE tbl VARCHAR(255);
-    DECLARE col_count INT;
-
+    DECLARE done INT DEFAULT FALSE;
+    DECLARE tbl_name VARCHAR(255);
+    DECLARE col_name VARCHAR(255);
+    DECLARE col_list TEXT DEFAULT '';
+    DECLARE query TEXT;
     
-    DECLARE cur CURSOR FOR
-        SELECT TABLE_NAME
-        FROM INFORMATION_SCHEMA.TABLES
-        WHERE TABLE_SCHEMA = DATABASE()
-          AND TABLE_TYPE = 'BASE TABLE';
-
+    -- Cursor for all tables in the current database
+    DECLARE table_cursor CURSOR FOR 
+        SELECT table_name FROM information_schema.tables 
+        WHERE table_schema = DATABASE();
     
-    DECLARE CONTINUE HANDLER FOR NOT FOUND SET done = 1;
-    DECLARE EXIT HANDLER FOR SQLEXCEPTION
-    BEGIN
-        SELECT 'An unexpected error occurred during execution.' AS ErrorMessage;
-        ROLLBACK;
-    END;
-
+    DECLARE CONTINUE HANDLER FOR NOT FOUND SET done = TRUE;
     
-    DECLARE result TEXT DEFAULT '';
-
-    OPEN cur;
-
-    read_loop: LOOP
-        FETCH cur INTO tbl;
+    OPEN table_cursor;
+    
+    table_loop: LOOP
+        FETCH table_cursor INTO tbl_name;
         IF done THEN
-            LEAVE read_loop;
+            LEAVE table_loop;
         END IF;
-
         
-        SELECT GROUP_CONCAT(CONCAT('`', COLUMN_NAME, '`') ORDER BY ORDINAL_POSITION),
-               COUNT(*) INTO @columns, col_count
-        FROM INFORMATION_SCHEMA.COLUMNS
-        WHERE TABLE_SCHEMA = DATABASE()
-          AND TABLE_NAME = tbl
-          AND DATA_TYPE NOT IN ('blob', 'longblob', 'mediumblob', 'tinyblob');
-
-        IF @columns IS NOT NULL THEN
-            -- Build dynamic SQL to flatten each row
-            SET @sql = CONCAT("
-                SELECT GROUP_CONCAT(
-                    CONCAT_WS(',', '", tbl, "', ", REPLACE(@columns, ',', ',
-                    CAST(`', '', ' AS CHAR), CAST(`', '', ' AS CHAR)'), ",
-                    ',\'Table columns\',', col_count
-                    ")
-                    SEPARATOR '\\n'
-                ) INTO @match_result
-                FROM `", tbl, "` LIMIT 5;
-            ");
-
-            BEGIN
-                DECLARE CONTINUE HANDLER FOR SQLEXCEPTION
-                BEGIN
-                    ITERATE read_loop;
-                END;
-
-                PREPARE stmt FROM @sql;
-                EXECUTE stmt;
-                DEALLOCATE PREPARE stmt;
-
-                IF @match_result IS NOT NULL THEN
-                    SET result = CONCAT(result, '\n', @match_result);
-                END IF;
-            END;
-        END IF;
-
+        -- Reset column list for each table
+        SET col_list = '';
+        
+        -- Get all columns for the current table
+        SELECT GROUP_CONCAT(CONCAT(
+            '''', column_name, ''', ',
+            'IFNULL(CONCAT(''"'', REPLACE(IFNULL(', column_name, ', ''NULL''), ''"'', ''""''), ''"''), ''NULL'')'
+        ) SEPARATOR ', ') INTO col_list
+        FROM information_schema.columns
+        WHERE table_schema = DATABASE() AND table_name = tbl_name;
+        
+        -- Build and execute the dynamic query
+        SET @query = CONCAT(
+            'INSERT INTO table_data_output ',
+            'SELECT CONCAT_WS('','', ',
+            CONCAT('''"', tbl_name, '"'''), ', ',
+            col_list,
+            ') FROM ', tbl_name
+        );
+        
+        PREPARE stmt FROM @query;
+        EXECUTE stmt;
+        DEALLOCATE PREPARE stmt;
     END LOOP;
-
-    CLOSE cur;
-
     
-    SELECT REPLACE(result, '\n', '\r\n') AS CSV_Output;
-
-END$$
-
+    CLOSE table_cursor;
+    
+    -- Display the results
+    SELECT output_line FROM table_data_output;
+    
+    -- Clean up
+    DROP TEMPORARY TABLE table_data_output;
+END //
 DELIMITER ;
