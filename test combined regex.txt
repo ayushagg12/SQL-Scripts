@@ -1,0 +1,156 @@
+DELIMITER $$
+
+DROP PROCEDURE IF EXISTS find_sensitive_data_in_db$$
+
+CREATE PROCEDURE find_sensitive_data_in_db()
+BEGIN
+    -- Declarations
+    DECLARE done INT DEFAULT 0;
+    DECLARE tbl VARCHAR(255);
+    DECLARE col VARCHAR(255);
+    
+    -- Tracking variables
+    DECLARE v_actual_tables INT DEFAULT 0;
+    DECLARE v_total_columns INT DEFAULT 0;
+    DECLARE v_tables_with_match INT DEFAULT 0;
+    DECLARE v_failed_checks INT DEFAULT 0;
+    
+    -- CSV output
+    DECLARE result TEXT DEFAULT 'table_name,column_name,matched_value,pattern_type';
+    DECLARE tables_with_matches TEXT DEFAULT '';
+    
+    -- Cursor for text columns
+    DECLARE cur CURSOR FOR
+        SELECT TABLE_NAME, COLUMN_NAME
+        FROM INFORMATION_SCHEMA.COLUMNS
+        WHERE TABLE_SCHEMA = DATABASE()
+          AND DATA_TYPE IN ('char', 'varchar', 'text', 'longtext');
+
+    DECLARE CONTINUE HANDLER FOR NOT FOUND SET done = 1;
+
+    -- Count actual tables
+    SELECT COUNT(DISTINCT TABLE_NAME) INTO v_actual_tables
+    FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE();
+
+    OPEN cur;
+
+    read_loop: LOOP
+        FETCH cur INTO tbl, col;
+        IF done THEN LEAVE read_loop; END IF;
+        
+        SET v_total_columns = v_total_columns + 1;
+
+        BEGIN
+            DECLARE CONTINUE HANDLER FOR SQLEXCEPTION 
+            BEGIN
+                SET v_failed_checks = v_failed_checks + 1;
+            END;
+
+            -- Create temporary table for matches
+            CREATE TEMPORARY TABLE IF NOT EXISTS temp_matches (
+                table_name VARCHAR(255),
+                column_name VARCHAR(255),
+                matched_value TEXT,
+                pattern_type VARCHAR(50)
+            );
+            TRUNCATE TABLE temp_matches;
+
+            -- Check each pattern individually and store matches
+            
+            -- 1. EMAIL - More specific pattern
+            SET @sql = CONCAT(
+                "INSERT INTO temp_matches ",
+                "SELECT '", tbl, "', '", col, "', ",
+                "REGEXP_SUBSTR(`", col, "`, '[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\\\.[A-Za-z]{2,}'), ",
+                "'EMAIL_REGEX' ",
+                "FROM `", tbl, "` ",
+                "WHERE `", col, "` REGEXP '[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\\\.[A-Za-z]{2,}' ",
+                "AND `", col, "` IS NOT NULL ",
+                "AND `", col, "` != '' ",
+                "LIMIT 100"
+            );
+            PREPARE stmt FROM @sql;
+            EXECUTE stmt;
+            DEALLOCATE PREPARE stmt;
+
+            -- 2. MOBILE - Indian mobile numbers
+            SET @sql = CONCAT(
+                "INSERT INTO temp_matches ",
+                "SELECT '", tbl, "', '", col, "', ",
+                "REGEXP_SUBSTR(`", col, "`, '(\\\\+91|91|0)?[6-9][0-9]{9}'), ",
+                "'MOBILE_REGEX' ",
+                "FROM `", tbl, "` ",
+                "WHERE `", col, "` REGEXP '(\\\\+91|91|0)?[6-9][0-9]{9}' ",
+                "AND `", col, "` IS NOT NULL ",
+                "AND `", col, "` != '' ",
+                "LIMIT 100"
+            );
+            PREPARE stmt FROM @sql;
+            EXECUTE stmt;
+            DEALLOCATE PREPARE stmt;
+
+            -- 3. IP Address
+            SET @sql = CONCAT(
+                "INSERT INTO temp_matches ",
+                "SELECT '", tbl, "', '", col, "', ",
+                "REGEXP_SUBSTR(`", col, "`, '([0-9]{1,3}\\\\.){3}[0-9]{1,3}'), ",
+                "'IP_REGEX' ",
+                "FROM `", tbl, "` ",
+                "WHERE `", col, "` REGEXP '([0-9]{1,3}\\\\.){3}[0-9]{1,3}' ",
+                "AND `", col, "` IS NOT NULL ",
+                "AND `", col, "` != '' ",
+                "LIMIT 100"
+            );
+            PREPARE stmt FROM @sql;
+            EXECUTE stmt;
+            DEALLOCATE PREPARE stmt;
+
+            -- Get all matches for this column
+            SELECT GROUP_CONCAT(
+                CONCAT('"', table_name, '","', column_name, '","', 
+                       matched_value, '","', pattern_type, '"') 
+                SEPARATOR '\n'
+            ) INTO @match_result 
+            FROM temp_matches
+            WHERE matched_value IS NOT NULL;
+
+            IF @match_result IS NOT NULL AND @match_result != '' THEN
+                SET result = CONCAT(result, '\n', @match_result);
+
+                -- Track unique tables with matches
+                IF LOCATE(CONCAT(',', tbl, ','), CONCAT(',', tables_with_matches, ',')) = 0 THEN
+                    SET v_tables_with_match = v_tables_with_match + 1;
+                    SET tables_with_matches = CONCAT(tables_with_matches, ',', tbl);
+                END IF;
+            END IF;
+            
+            -- Clean up
+            DROP TEMPORARY TABLE IF EXISTS temp_matches;
+        END;
+    END LOOP;
+
+    CLOSE cur;
+
+    -- Output results
+    IF LENGTH(result) > LENGTH('table_name,column_name,matched_value,pattern_type') THEN
+        SELECT REPLACE(result, '\n', '\r\n') AS CSV_Output;
+    ELSE
+        SELECT CONCAT('No sensitive data found. Scanned ', v_total_columns, ' columns across ', v_actual_tables, ' tables.') AS CSV_Output;
+    END IF;
+
+    -- Summary stats
+    SELECT '========================================' AS SummaryLine
+    UNION ALL
+    SELECT CONCAT('Actual Tables in Database: ', v_actual_tables) AS SummaryLine
+    UNION ALL
+    SELECT CONCAT('Columns Scanned: ', v_total_columns) AS SummaryLine
+    UNION ALL
+    SELECT CONCAT('Tables with Sensitive Data: ', v_tables_with_match) AS SummaryLine
+    UNION ALL
+    SELECT CONCAT('Failed Column Scans: ', v_failed_checks) AS SummaryLine
+    UNION ALL
+    SELECT '========================================' AS SummaryLine;
+END$$
+
+DELIMITER ;
