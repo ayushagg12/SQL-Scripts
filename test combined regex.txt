@@ -160,7 +160,7 @@ BEGIN
             DEALLOCATE PREPARE stmt;
 
            
-           -- UPI_REGEX: ^[A-Za-z0-9]+@[A-Za-z]+$ (no dots allowed)
+           
 SET @sql = CONCAT(
     "SELECT GROUP_CONCAT(DISTINCT CONCAT('\"", tbl, "\",\"", col, "\",\"', ",
     "REGEXP_SUBSTR(", col, ", '^[A-Za-z0-9]+@[A-Za-z]+$'), ",
