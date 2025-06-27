@@ -163,7 +163,7 @@ BEGIN
            
 SET @sql = CONCAT(
     "SELECT GROUP_CONCAT(DISTINCT CONCAT('\"", tbl, "\",\"", col, "\",\"', ",
-    "REGEXP_SUBSTR(", col, ", '^[A-Za-z0-9]+@[A-Za-z]+$'), ",
+    "REGEXP_SUBSTR(", col, ", '^[A-Za-z0-9.,-]+@[A-Za-z]+$'), ",
     "'\",\"UPI_REGEX\"') SEPARATOR '\n') INTO @upi_result ",
     "FROM ", tbl, " ",
     "WHERE ", col, " REGEXP '^[A-Za-z0-9]+@[A-Za-z]+$' ",
