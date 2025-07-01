@@ -162,14 +162,12 @@ BEGIN
            
            
 SET @sql = CONCAT(
-    "SELECT GROUP_CONCAT(DISTINCT CONCAT('\"", tbl, "\",\"", col, "\",\"', ",
-    "REGEXP_SUBSTR(", col, ", '^[A-Za-z0-9]+@[A-Za-z]+$'), ",
-    "'\",\"UPI_REGEX\"') SEPARATOR '\n') INTO @upi_result ",
-    "FROM ", tbl, " ",
-    "WHERE ", col, " REGEXP '^[A-Za-z0-9]+@[A-Za-z]+$' ",
-    "AND ", col, " NOT LIKE '%.%' ",  -- Explicitly exclude dots
-    "AND ", col, " IS NOT NULL AND ", col, " != '' LIMIT 2"
-);
+                "SELECT GROUP_CONCAT(DISTINCT CONCAT('\"", tbl, "\",\"", col, "\",\"', ",
+                "`", col, "`, '\",\"UPI_REGEX\"') SEPARATOR '\n') INTO @upi_result ",
+                "FROM (SELECT `", col, "` FROM `", tbl, "` WHERE `", col, "` IS NOT NULL AND `", col, "` != '' LIMIT 2) AS sample_rows ",
+                "WHERE `", col, "` REGEXP '^[A-Za-z0-9._+-]+@[A-Za-z]+$' ",
+                "AND `", col, "` NOT REGEXP '@.*\\\\.'"
+            );
             PREPARE stmt FROM @sql;
             EXECUTE stmt;
             DEALLOCATE PREPARE stmt;
