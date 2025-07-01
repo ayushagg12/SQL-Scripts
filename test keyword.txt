@@ -1,22 +1,27 @@
 DELIMITER $$
 
-DROP PROCEDURE IF EXISTS find_sensitive_data_in_db$$
+DROP PROCEDURE IF EXISTS find_sensitive_columns_optimized$$
 
-CREATE PROCEDURE find_sensitive_data_in_db()
+CREATE PROCEDURE find_sensitive_columns_optimized()
 BEGIN
+    -- == DECLARATIONS ==
     DECLARE done INT DEFAULT 0;
     DECLARE tbl VARCHAR(255);
     DECLARE col VARCHAR(255);
     DECLARE col_lower VARCHAR(255);
-    
+    DECLARE pattern_type VARCHAR(50);
+    DECLARE has_match_in_table BOOLEAN;
+
+    -- Counters for the final summary
     DECLARE v_actual_tables INT DEFAULT 0;
-    DECLARE v_total_columns INT DEFAULT 0;
+    DECLARE v_total_columns_scanned INT DEFAULT 0;
     DECLARE v_tables_with_match INT DEFAULT 0;
-    DECLARE v_failed_checks INT DEFAULT 0;
     
-    DECLARE result TEXT DEFAULT 'table_name,column_name,matched_value,pattern_type';
-    DECLARE tables_with_matches TEXT DEFAULT '';
-    
+    -- Result strings
+    DECLARE result TEXT DEFAULT '"table_name","column_name","matched_value","pattern_type"';
+    DECLARE tables_with_matches_list TEXT DEFAULT '';
+
+    -- Cursor to iterate over all text-based columns in the current database
     DECLARE cur CURSOR FOR
         SELECT TABLE_NAME, COLUMN_NAME
         FROM INFORMATION_SCHEMA.COLUMNS
@@ -24,125 +29,88 @@ BEGIN
           AND DATA_TYPE IN ('char', 'varchar', 'text', 'longtext', 'mediumtext', 'tinytext');
 
     DECLARE CONTINUE HANDLER FOR NOT FOUND SET done = 1;
+    -- A general handler for potential dynamic SQL errors
+    DECLARE CONTINUE HANDLER FOR SQLEXCEPTION BEGIN END;
 
+    -- == INITIALIZATION ==
     SELECT COUNT(DISTINCT TABLE_NAME) INTO v_actual_tables
     FROM INFORMATION_SCHEMA.COLUMNS
     WHERE TABLE_SCHEMA = DATABASE();
 
     OPEN cur;
 
+    -- == MAIN LOOP: Iterate over each column ==
     read_loop: LOOP
         FETCH cur INTO tbl, col;
         IF done THEN LEAVE read_loop; END IF;
         
-        SET v_total_columns = v_total_columns + 1;
+        SET v_total_columns_scanned = v_total_columns_scanned + 1;
         SET col_lower = LOWER(col);
+        SET pattern_type = NULL; -- Reset for each column
 
-        BEGIN
-            DECLARE CONTINUE HANDLER FOR SQLEXCEPTION 
-            BEGIN
-                SET v_failed_checks = v_failed_checks + 1;
-            END;
-
-           
-            SET @sensitive_col_result = NULL;
-            
-            
-            SET @pattern_type = CASE 
-                WHEN col_lower LIKE '%address%' OR 
-                     col_lower LIKE '%full address%' OR 
-                     col_lower LIKE '%complete address%' OR
-                     col_lower LIKE '%residential address%' OR
-                     col_lower LIKE '%permanent address%' OR
-                     col_lower LIKE '%locality%' OR
-                     col_lower LIKE '%pincode%' OR
-                     col_lower LIKE '%postal code%' OR
-                     col_lower LIKE '%zip%' OR
-                     col_lower LIKE '%zip code%' OR
-                     col_lower LIKE '%city%' OR
-                     col_lower LIKE '%state%' OR
-                     col_lower LIKE '%add%' THEN 'Address'
-                     
-                WHEN col_lower LIKE '%name%' OR 
-                     col_lower LIKE '%nam%' THEN 'Name'
-                     
-                WHEN col_lower LIKE '%date of birth%' OR 
-                     col_lower LIKE '%dob%' OR
-                     col_lower LIKE '%birthdate%' OR
-                     col_lower LIKE '%born on%' THEN 'DOB'
-                     
-                WHEN col_lower LIKE '%account number%' OR 
-                     col_lower LIKE '%acc number%' OR
-                     col_lower LIKE '%bank account%' OR
-                     col_lower LIKE '%account no%' OR
-                     col_lower LIKE '%a/c no%' THEN 'AccountNumber'
-                     
-                WHEN col_lower LIKE '%customer id%' OR 
-                     col_lower LIKE '%cust id%' OR
-                     col_lower LIKE '%customer number%' OR
-                     col_lower LIKE '%cust%' THEN 'CustomerID'
-                     
-                WHEN col_lower LIKE '%national id%' OR 
-                     col_lower LIKE '%identity card%' OR
-                     col_lower LIKE '%proof of identity%' OR
-                     col_lower LIKE '%document number%' THEN 'SensitiveHints'
-                     
-                WHEN col_lower LIKE '%insurance number%' OR 
-                     col_lower LIKE '%policy number%' OR
-                     col_lower LIKE '%insurance id%' OR
-                     col_lower LIKE '%ins id%' THEN 'InsurancePolicy'
-                     
-                ELSE NULL
-            END;
-
-            
-            IF @pattern_type IS NOT NULL THEN
-                SET @sql = CONCAT(
-                    "SELECT GROUP_CONCAT(DISTINCT CONCAT('\"", tbl, "\",\"", col, "\",\"', ",
-                    "REPLACE(`", col, "`, '\"', '\"\"'), '\",\"", @pattern_type, "\"') SEPARATOR '\n') ",
-                    "INTO @sensitive_col_result FROM `", tbl, "` ",
-                    "WHERE `", col, "` IS NOT NULL AND `", col, "` != '' LIMIT 2"
-                );
-                PREPARE stmt FROM @sql;
-                EXECUTE stmt;
-                DEALLOCATE PREPARE stmt;
-            END IF;
-
-           
-            IF @sensitive_col_result IS NOT NULL AND @sensitive_col_result != '' THEN
-                SET result = CONCAT(result, '\n', @sensitive_col_result);
-                
-              
-                IF LOCATE(CONCAT(',', tbl, ','), CONCAT(',', tables_with_matches, ',')) = 0 THEN
-                    SET v_tables_with_match = v_tables_with_match + 1;
-                    SET tables_with_matches = CONCAT(tables_with_matches, ',', tbl);
-                END IF;
-            END IF;
+        -- == CORE LOGIC: Identify sensitive columns by their NAME ==
+        SET pattern_type = CASE 
+            WHEN col_lower LIKE '%address%' OR col_lower LIKE '%add%' OR col_lower LIKE '%locality%' OR col_lower LIKE '%pincode%' OR col_lower LIKE '%postal%' OR col_lower LIKE '%zip%' OR col_lower LIKE '%city%' OR col_lower LIKE '%state%' THEN 'Address'
+            WHEN col_lower LIKE '%name%' OR col_lower LIKE '%nam%' THEN 'Name'
+            WHEN col_lower LIKE '%date of birth%' OR col_lower LIKE '%dob%' OR col_lower LIKE '%birthdate%' THEN 'DOB'
+            WHEN col_lower LIKE '%account number%' OR col_lower LIKE '%acc no%' OR col_lower LIKE '%a/c no%' THEN 'AccountNumber'
+            WHEN col_lower LIKE '%customer id%' OR col_lower LIKE '%cust id%' OR col_lower LIKE '%cust%' THEN 'CustomerID'
+            WHEN col_lower LIKE '%national id%' OR col_lower LIKE '%identity card%' OR col_lower LIKE '%document number%' THEN 'SensitiveDocument'
+            WHEN col_lower LIKE '%insurance number%' OR col_lower LIKE '%policy number%' OR col_lower LIKE '%ins id%' THEN 'InsurancePolicy'
+            ELSE NULL
         END;
-    END LOOP;
 
+        -- If the column name was identified as sensitive, fetch up to 2 sample values
+        IF pattern_type IS NOT NULL THEN
+            SET has_match_in_table = FALSE;
+            
+            -- Fetch the first non-empty row
+            SET @val1 = NULL;
+            SET @sql1 = CONCAT('SELECT `', col, '` INTO @val1 FROM `', tbl, '` WHERE `', col, '` IS NOT NULL AND `', col, '` != \'\' LIMIT 1');
+            PREPARE stmt1 FROM @sql1; EXECUTE stmt1; DEALLOCATE PREPARE stmt1;
+
+            -- Fetch the second non-empty row
+            SET @val2 = NULL;
+            SET @sql2 = CONCAT('SELECT `', col, '` INTO @val2 FROM `', tbl, '` WHERE `', col, '` IS NOT NULL AND `', col, '` != \'\' LIMIT 1 OFFSET 1');
+            PREPARE stmt2 FROM @sql2; EXECUTE stmt2; DEALLOCATE PREPARE stmt2;
+
+            -- Process the first fetched value, if it exists
+            IF @val1 IS NOT NULL THEN
+                SET result = CONCAT(result, '\n', '"', tbl, '","', col, '","', REPLACE(@val1, '"', '""'), '","', pattern_type, '"');
+                SET has_match_in_table = TRUE;
+            END IF;
+
+            -- Process the second fetched value, if it exists
+            IF @val2 IS NOT NULL THEN
+                SET result = CONCAT(result, '\n', '"', tbl, '","', col, '","', REPLACE(@val2, '"', '""'), '","', pattern_type, '"');
+                SET has_match_in_table = TRUE;
+            END IF;
+
+            -- Track tables that have at least one match
+            IF has_match_in_table AND LOCATE(CONCAT(',', tbl, ','), CONCAT(',', tables_with_matches_list, ',')) = 0 THEN
+                SET v_tables_with_match = v_tables_with_match + 1;
+                SET tables_with_matches_list = CONCAT(tables_with_matches_list, tbl, ',');
+            END IF;
+        END IF;
+
+    END LOOP;
     CLOSE cur;
 
-
-    IF LENGTH(result) > LENGTH('table_name,column_name,matched_value,pattern_type') THEN
-        SELECT REPLACE(result, '\n', '\r\n') AS CSV_Output;
+    -- == FINAL OUTPUT ==
+    -- Output 1: The CSV Data
+    IF LENGTH(result) > LENGTH('"table_name","column_name","matched_value","pattern_type"') THEN
+        SELECT result AS CSV_Output;
     ELSE
-        SELECT CONCAT('No sensitive data found. Scanned ', v_total_columns, 
-                     ' columns across ', v_actual_tables, ' tables.') AS CSV_Output;
+        SELECT CONCAT('No sensitive columns found based on name hints. Scanned ', v_total_columns_scanned, 
+                     ' columns across ', v_actual_tables, ' tables.') AS Scan_Result;
     END IF;
 
-    
-    SELECT '========================================' AS SummaryLine
-    UNION ALL
-    SELECT CONCAT('Actual Tables in Database: ', v_actual_tables) AS SummaryLine
-    UNION ALL
-    SELECT CONCAT('Columns Scanned: ', v_total_columns) AS SummaryLine
-    UNION ALL
-    SELECT CONCAT('Tables with Sensitive Data: ', v_tables_with_match) AS SummaryLine
-    UNION ALL
-    SELECT CONCAT('Failed Column Scans: ', v_failed_checks) AS SummaryLine
-    UNION ALL
-    SELECT '========================================' AS SummaryLine;
+    -- Output 2: The Summary Report
+    SELECT '========================================' AS '--- Summary ---'
+    UNION ALL SELECT CONCAT('Total Tables in Database: ', v_actual_tables)
+    UNION ALL SELECT CONCAT('Text Columns Scanned: ', v_total_columns_scanned)
+    UNION ALL SELECT CONCAT('Tables with Hinted Sensitive Data: ', v_tables_with_match)
+    UNION ALL SELECT '========================================';
 END$$
 
 DELIMITER ;
