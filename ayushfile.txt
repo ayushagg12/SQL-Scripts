@@ -1,0 +1,142 @@
+DELIMITER $$
+
+DROP PROCEDURE IF EXISTS find_sensitive_data_enhanced$$
+
+CREATE PROCEDURE find_sensitive_data_enhanced()
+BEGIN
+    -- == DECLARATIONS ==
+    DECLARE done INT DEFAULT 0;
+    DECLARE tbl VARCHAR(255);
+    DECLARE col VARCHAR(255);
+    DECLARE col_lower VARCHAR(255);
+    DECLARE pattern_type VARCHAR(50);
+    
+    -- Counters for the final summary
+    DECLARE v_actual_tables INT DEFAULT 0;
+    DECLARE v_total_columns_scanned INT DEFAULT 0;
+    DECLARE v_tables_with_match INT DEFAULT 0;
+    DECLARE v_failed_checks INT DEFAULT 0;
+    
+    -- Result strings
+    DECLARE result TEXT DEFAULT '"table_name","column_name","matched_value","pattern_type"';
+    DECLARE tables_with_matches TEXT DEFAULT '';
+
+    -- Cursor for all text-based columns
+    DECLARE cur CURSOR FOR
+        SELECT TABLE_NAME, COLUMN_NAME
+        FROM INFORMATION_SCHEMA.COLUMNS
+        WHERE TABLE_SCHEMA = DATABASE()
+          AND DATA_TYPE IN ('char', 'varchar', 'text', 'longtext', 'mediumtext', 'tinytext');
+
+    DECLARE CONTINUE HANDLER FOR NOT FOUND SET done = 1;
+    DECLARE CONTINUE HANDLER FOR SQLEXCEPTION 
+        BEGIN
+            SET v_failed_checks = v_failed_checks + 1;
+        END;
+
+    -- == INITIALIZATION ==
+    SELECT COUNT(DISTINCT TABLE_NAME) INTO v_actual_tables
+    FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE();
+
+    OPEN cur;
+
+    -- == MAIN PROCESSING LOOP ==
+    read_loop: LOOP
+        FETCH cur INTO tbl, col;
+        IF done THEN LEAVE read_loop; END IF;
+        
+        SET v_total_columns_scanned = v_total_columns_scanned + 1;
+        SET col_lower = LOWER(col);
+        SET pattern_type = NULL;
+
+        -- == COLUMN NAME PATTERN MATCHING ==
+        -- (Improved pattern matching from the optimized version)
+        SET pattern_type = CASE 
+            WHEN col_lower LIKE '%address%' OR col_lower LIKE '%add%' OR 
+                 col_lower LIKE '%locality%' OR col_lower LIKE '%pincode%' OR 
+                 col_lower LIKE '%postal%' OR col_lower LIKE '%zip%' OR 
+                 col_lower LIKE '%city%' OR col_lower LIKE '%state%' THEN 'Address'
+            WHEN col_lower LIKE '%name%' OR col_lower LIKE '%nam%' THEN 'Name'
+            WHEN col_lower LIKE '%date of birth%' OR col_lower LIKE '%dob%' OR 
+                 col_lower LIKE '%birthdate%' THEN 'DOB'
+            WHEN col_lower LIKE '%account number%' OR col_lower LIKE '%acc no%' OR 
+                 col_lower LIKE '%a/c no%' THEN 'AccountNumber'
+            WHEN col_lower LIKE '%customer id%' OR col_lower LIKE '%cust id%' OR 
+                 col_lower LIKE '%cust%' THEN 'CustomerID'
+            WHEN col_lower LIKE '%national id%' OR col_lower LIKE '%identity card%' OR 
+                 col_lower LIKE '%document number%' THEN 'SensitiveDocument'
+            WHEN col_lower LIKE '%insurance number%' OR col_lower LIKE '%policy number%' OR 
+                 col_lower LIKE '%ins id%' THEN 'InsurancePolicy'
+            ELSE NULL
+        END;
+
+        -- == VALUE SAMPLING ==
+        -- (Combined approach: check content if column name matches pattern)
+        IF pattern_type IS NOT NULL THEN
+            BEGIN
+                DECLARE val1, val2 TEXT;
+                
+                -- Get first sample value
+                SET @sql = CONCAT('SELECT `', col, '` INTO @val1 FROM `', tbl, 
+                                 '` WHERE `', col, '` IS NOT NULL AND `', col, 
+                                 '` != \'\' LIMIT 1');
+                PREPARE stmt FROM @sql; 
+                EXECUTE stmt; 
+                DEALLOCATE PREPARE stmt;
+                
+                -- Get second sample value (if exists)
+                SET @sql = CONCAT('SELECT `', col, '` INTO @val2 FROM `', tbl, 
+                                 '` WHERE `', col, '` IS NOT NULL AND `', col, 
+                                 '` != \'\' LIMIT 1 OFFSET 1');
+                PREPARE stmt FROM @sql; 
+                EXECUTE stmt; 
+                DEALLOCATE PREPARE stmt;
+                
+                -- Add to results if values found
+                IF @val1 IS NOT NULL THEN
+                    SET result = CONCAT(result, '\n', '"', tbl, '","', col, '","', 
+                                      REPLACE(@val1, '"', '""'), '","', pattern_type, '"');
+                    
+                    -- Track tables with matches
+                    IF LOCATE(CONCAT(',', tbl, ','), CONCAT(',', tables_with_matches, ',')) = 0 THEN
+                        SET v_tables_with_match = v_tables_with_match + 1;
+                        SET tables_with_matches = CONCAT(tables_with_matches, ',', tbl);
+                    END IF;
+                END IF;
+                
+                IF @val2 IS NOT NULL THEN
+                    SET result = CONCAT(result, '\n', '"', tbl, '","', col, '","', 
+                                      REPLACE(@val2, '"', '""'), '","', pattern_type, '"');
+                END IF;
+            END;
+        END IF;
+    END LOOP;
+
+    CLOSE cur;
+
+    -- == OUTPUT RESULTS ==
+    -- (Improved output handling from both versions)
+    IF LENGTH(result) > LENGTH('"table_name","column_name","matched_value","pattern_type"') THEN
+        SELECT result AS CSV_Output;
+    ELSE
+        SELECT CONCAT('No sensitive data found. Scanned ', v_total_columns_scanned, 
+                     ' columns across ', v_actual_tables, ' tables.') AS Message;
+    END IF;
+
+    -- == SUMMARY REPORT ==
+    -- (More detailed summary from first version with better formatting from second)
+    SELECT '========================================' AS '--- Summary ---'
+    UNION ALL
+    SELECT CONCAT('Total Tables in Database: ', v_actual_tables)
+    UNION ALL
+    SELECT CONCAT('Columns Scanned: ', v_total_columns_scanned)
+    UNION ALL
+    SELECT CONCAT('Tables with Sensitive Data: ', v_tables_with_match)
+    UNION ALL
+    SELECT CONCAT('Failed Column Checks: ', v_failed_checks)
+    UNION ALL
+    SELECT '========================================';
+END$$
+
+DELIMITER ;
