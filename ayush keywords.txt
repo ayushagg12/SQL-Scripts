@@ -1,0 +1,230 @@
+DELIMITER $$
+
+DROP PROCEDURE IF EXISTS find_sensitive_data_comprehensive$$
+
+CREATE PROCEDURE find_sensitive_data_comprehensive()
+BEGIN
+    -- == DECLARATIONS ==
+    DECLARE done INT DEFAULT 0;
+    DECLARE tbl VARCHAR(255);
+    DECLARE col VARCHAR(255);
+    DECLARE current_value TEXT;
+    DECLARE has_match_in_table BOOLEAN;
+    DECLARE i INT; -- Loop counter for sample rows
+    DECLARE occurrence_counter INT; -- For multiple matches in one field
+    
+    -- Counters for summary
+    DECLARE v_actual_tables INT DEFAULT 0;
+    DECLARE v_total_columns INT DEFAULT 0;
+    DECLARE v_tables_with_match INT DEFAULT 0;
+    DECLARE v_failed_checks INT DEFAULT 0;
+    
+    -- Result storage (proper CSV format)
+    DECLARE result TEXT DEFAULT '"table_name","column_name","matched_value","pattern_type"';
+    DECLARE tables_with_matches TEXT DEFAULT '';
+
+    -- Cursor for all text-based columns
+    DECLARE cur CURSOR FOR
+        SELECT TABLE_NAME, COLUMN_NAME
+        FROM INFORMATION_SCHEMA.COLUMNS
+        WHERE TABLE_SCHEMA = DATABASE()
+          AND DATA_TYPE IN ('char', 'varchar', 'text', 'longtext', 'mediumtext', 'tinytext');
+
+    DECLARE CONTINUE HANDLER FOR NOT FOUND SET done = 1;
+    DECLARE CONTINUE HANDLER FOR SQLEXCEPTION 
+    BEGIN
+        SET v_failed_checks = v_failed_checks + 1;
+    END;
+
+    -- == INITIALIZATION ==
+    SELECT COUNT(DISTINCT TABLE_NAME) INTO v_actual_tables
+    FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE();
+
+    OPEN cur;
+
+    -- == MAIN PROCESSING LOOP ==
+    read_loop: LOOP
+        FETCH cur INTO tbl, col;
+        IF done THEN LEAVE read_loop; END IF;
+        
+        SET v_total_columns = v_total_columns + 1;
+        SET has_match_in_table = FALSE;
+
+        -- == EFFICIENT SAMPLE FETCHING ==
+        -- Get first non-empty value
+        SET @sql = CONCAT('SELECT `', col, '` INTO @val1 FROM `', tbl, 
+                         '` WHERE `', col, '` IS NOT NULL AND `', col, 
+                         '` != \'\' LIMIT 1');
+        PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+        
+        -- Get second non-empty value
+        SET @sql = CONCAT('SELECT `', col, '` INTO @val2 FROM `', tbl, 
+                         '` WHERE `', col, '` IS NOT NULL AND `', col, 
+                         '` != \'\' LIMIT 1 OFFSET 1');
+        PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+        -- == PROCESS SAMPLE VALUES WITH ALL REGEX PATTERNS ==
+        SET i = 1;
+        WHILE i <= 2 DO
+            IF i = 1 THEN SET current_value = @val1;
+            ELSE SET current_value = @val2;
+            END IF;
+
+            IF current_value IS NOT NULL THEN
+                -- 1. DRIVING LICENSE (India)
+                SET occurrence_counter = 1;
+                dl_loop: WHILE occurrence_counter <= 3 DO -- Limit to 3 matches per pattern per value
+                    SET @match = REGEXP_SUBSTR(current_value, '[A-Z]{2}[0-9]{2}[\\s-]?[0-9]{4}[0-9]{7}', 1, occurrence_counter);
+                    IF @match IS NULL THEN LEAVE dl_loop; END IF;
+                    SET result = CONCAT(result, '\n', '"', tbl, '","', col, '","', 
+                                      REPLACE(@match, '"', '""'), '","DL_REGEX"');
+                    SET has_match_in_table = TRUE;
+                    SET occurrence_counter = occurrence_counter + 1;
+                END WHILE dl_loop;
+                
+                -- 2. GSTIN (India)
+                SET occurrence_counter = 1;
+                gstin_loop: WHILE occurrence_counter <= 3 DO
+                    SET @match = REGEXP_SUBSTR(current_value, '[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][A-Z0-9]Z[A-Z0-9]', 1, occurrence_counter);
+                    IF @match IS NULL THEN LEAVE gstin_loop; END IF;
+                    SET result = CONCAT(result, '\n', '"', tbl, '","', col, '","', 
+                                      REPLACE(@match, '"', '""'), '","GSTIN_REGEX"');
+                    SET has_match_in_table = TRUE;
+                    SET occurrence_counter = occurrence_counter + 1;
+                END WHILE gstin_loop;
+                
+                -- 3. IP ADDRESS (IPv4)
+                SET occurrence_counter = 1;
+                ip_loop: WHILE occurrence_counter <= 3 DO
+                    SET @match = REGEXP_SUBSTR(current_value, '(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)', 1, occurrence_counter);
+                    IF @match IS NULL THEN LEAVE ip_loop; END IF;
+                    SET result = CONCAT(result, '\n', '"', tbl, '","', col, '","', 
+                                      REPLACE(@match, '"', '""'), '","IP_REGEX"');
+                    SET has_match_in_table = TRUE;
+                    SET occurrence_counter = occurrence_counter + 1;
+                END WHILE ip_loop;
+                
+                -- 4. MAC ADDRESS
+                SET occurrence_counter = 1;
+                mac_loop: WHILE occurrence_counter <= 3 DO
+                    SET @match = REGEXP_SUBSTR(current_value, '([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})', 1, occurrence_counter);
+                    IF @match IS NULL THEN LEAVE mac_loop; END IF;
+                    SET result = CONCAT(result, '\n', '"', tbl, '","', col, '","', 
+                                      REPLACE(@match, '"', '""'), '","MAC_REGEX"');
+                    SET has_match_in_table = TRUE;
+                    SET occurrence_counter = occurrence_counter + 1;
+                END WHILE mac_loop;
+                
+                -- 5. GEOGRAPHIC COORDINATES
+                SET occurrence_counter = 1;
+                coord_loop: WHILE occurrence_counter <= 3 DO
+                    SET @match = REGEXP_SUBSTR(current_value, '-?[0-9]{1,3}\\.[0-9]+,\\s*-?[0-9]{1,3}\\.[0-9]+', 1, occurrence_counter);
+                    IF @match IS NULL THEN LEAVE coord_loop; END IF;
+                    SET result = CONCAT(result, '\n', '"', tbl, '","', col, '","', 
+                                      REPLACE(@match, '"', '""'), '","COORD_REGEX"');
+                    SET has_match_in_table = TRUE;
+                    SET occurrence_counter = occurrence_counter + 1;
+                END WHILE coord_loop;
+                
+                -- 6. EMAIL ADDRESS
+                SET occurrence_counter = 1;
+                email_loop: WHILE occurrence_counter <= 3 DO
+                    SET @match = REGEXP_SUBSTR(current_value, '[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}', 1, occurrence_counter);
+                    IF @match IS NULL THEN LEAVE email_loop; END IF;
+                    SET result = CONCAT(result, '\n', '"', tbl, '","', col, '","', 
+                                      REPLACE(@match, '"', '""'), '","EMAIL_REGEX"');
+                    SET has_match_in_table = TRUE;
+                    SET occurrence_counter = occurrence_counter + 1;
+                END WHILE email_loop;
+                
+                -- 7. MOBILE NUMBER (India)
+                SET occurrence_counter = 1;
+                mobile_loop: WHILE occurrence_counter <= 3 DO
+                    SET @match = REGEXP_SUBSTR(current_value, '(\\+91|91|0)?[6-9][0-9]{9}', 1, occurrence_counter);
+                    IF @match IS NULL THEN LEAVE mobile_loop; END IF;
+                    SET result = CONCAT(result, '\n', '"', tbl, '","', col, '","', 
+                                      REPLACE(@match, '"', '""'), '","MOBILE_REGEX"');
+                    SET has_match_in_table = TRUE;
+                    SET occurrence_counter = occurrence_counter + 1;
+                END WHILE mobile_loop;
+                
+                -- 8. PAN NUMBER (India)
+                SET occurrence_counter = 1;
+                pan_loop: WHILE occurrence_counter <= 3 DO
+                    SET @match = REGEXP_SUBSTR(current_value, '[A-Z]{5}[0-9]{4}[A-Z]', 1, occurrence_counter);
+                    IF @match IS NULL THEN LEAVE pan_loop; END IF;
+                    SET result = CONCAT(result, '\n', '"', tbl, '","', col, '","', 
+                                      REPLACE(@match, '"', '""'), '","PAN_REGEX"');
+                    SET has_match_in_table = TRUE;
+                    SET occurrence_counter = occurrence_counter + 1;
+                END WHILE pan_loop;
+                
+                -- 9. UPI ID (India)
+                SET occurrence_counter = 1;
+                upi_loop: WHILE occurrence_counter <= 3 DO
+                    SET @match = REGEXP_SUBSTR(current_value, '[a-zA-Z0-9.\\-_]{2,256}@[a-zA-Z]{2,64}', 1, occurrence_counter);
+                    IF @match IS NULL THEN LEAVE upi_loop; END IF;
+                    IF LOCATE('.', @match) = 0 THEN
+                        SET result = CONCAT(result, '\n', '"', tbl, '","', col, '","', 
+                                          REPLACE(@match, '"', '""'), '","UPI_REGEX"');
+                        SET has_match_in_table = TRUE;
+                    END IF;
+                    SET occurrence_counter = occurrence_counter + 1;
+                END WHILE upi_loop;
+                
+                -- 10. VOTER ID (India)
+                SET occurrence_counter = 1;
+                voterid_loop: WHILE occurrence_counter <= 3 DO
+                    SET @match = REGEXP_SUBSTR(current_value, '[A-Z]{3}[0-9]{7}', 1, occurrence_counter);
+                    IF @match IS NULL THEN LEAVE voterid_loop; END IF;
+                    SET result = CONCAT(result, '\n', '"', tbl, '","', col, '","', 
+                                      REPLACE(@match, '"', '""'), '","VOTERID_REGEX"');
+                    SET has_match_in_table = TRUE;
+                    SET occurrence_counter = occurrence_counter + 1;
+                END WHILE voterid_loop;
+                
+                -- 11. CREDIT CARD NUMBERS
+                SET occurrence_counter = 1;
+                card_loop: WHILE occurrence_counter <= 3 DO
+                    SET @match = REGEXP_SUBSTR(current_value, '4[0-9]{12}(?:[0-9]{3})?|5[1-5][0-9]{14}|3[47][0-9]{13}|6(?:011|5[0-9]{2})[0-9]{12}', 1, occurrence_counter);
+                    IF @match IS NULL THEN LEAVE card_loop; END IF;
+                    SET result = CONCAT(result, '\n', '"', tbl, '","', col, '","', 
+                                      REPLACE(@match, '"', '""'), '","CARD_REGEX"');
+                    SET has_match_in_table = TRUE;
+                    SET occurrence_counter = occurrence_counter + 1;
+                END WHILE card_loop;
+            END IF;
+            SET i = i + 1;
+        END WHILE;
+
+        -- Track tables with matches
+        IF has_match_in_table AND LOCATE(CONCAT(',', tbl, ','), CONCAT(',', tables_with_matches, ',')) = 0 THEN
+            SET v_tables_with_match = v_tables_with_match + 1;
+            SET tables_with_matches = CONCAT(tables_with_matches, ',', tbl);
+        END IF;
+    END LOOP;
+
+    CLOSE cur;
+
+    -- == OUTPUT RESULTS ==
+    IF LENGTH(result) > LENGTH('"table_name","column_name","matched_value","pattern_type"') THEN
+        SELECT result AS CSV_Output;
+    ELSE
+        SELECT CONCAT('No sensitive data found. Scanned ', v_total_columns, 
+                     ' columns across ', v_actual_tables, ' tables.') AS Message;
+    END IF;
+
+    -- == DETAILED SUMMARY REPORT ==
+    SELECT '========================================' AS '--- Summary Report ---'
+    UNION ALL
+    SELECT CONCAT('Total Tables in Database: ', v_actual_tables)
+    UNION ALL
+    SELECT CONCAT('Text Columns Scanned: ', v_total_columns)
+    UNION ALL
+    SELECT CONCAT('Tables with Sensitive Data: ', v_tables_with_match)
+    UNION ALL
+    SELECT CONCAT('Failed Column Checks: ', v_failed_checks);
+END$$
+
+DELIMITER ;
