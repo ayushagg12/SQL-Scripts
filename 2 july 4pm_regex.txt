@@ -20,7 +20,13 @@ BEGIN
         SELECT TABLE_NAME, COLUMN_NAME
         FROM INFORMATION_SCHEMA.COLUMNS
         WHERE TABLE_SCHEMA = DATABASE()
-          AND DATA_TYPE IN ('varchar', 'char', 'text', 'longtext', 'mediumtext', 'tinytext');
+          AND DATA_TYPE IN (
+    'varchar', 'char', 'text', 'longtext', 'mediumtext', 'tinytext', 
+    'json', 'enum', 'set', 'binary', 'varbinary', 'blob', 'longblob', 
+    'mediumblob', 'tinyblob', 'geometry', 'point', 'linestring', 
+    'polygon', 'multipoint', 'multilinestring', 'multipolygon', 
+    'geometrycollection'
+);
 
     DECLARE CONTINUE HANDLER FOR NOT FOUND SET done = 1;
 
