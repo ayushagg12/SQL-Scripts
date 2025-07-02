@@ -107,24 +107,35 @@ BEGIN
             -- If column name suggests sensitive data, check first 2 rows
             IF @pattern_type IS NOT NULL THEN
                 SET @sql = CONCAT(
-                    "SELECT GROUP_CONCAT(DISTINCT CONCAT('\"", tbl, "\",\"", col, "\",\"', ",
-                    "REPLACE(`", col, "`, '\"', '\"\"'), '\",\"", @pattern_type, "\"') SEPARATOR '\n') ",
-                    "INTO @sensitive_col_result FROM (SELECT `", col, "` FROM `", tbl, 
+                    "SELECT GROUP_CONCAT(DISTINCT CONCAT('\"', REPLACE(REPLACE(REPLACE(`", col, "`, '\"', '\"\"'), '\\', '\\\\'), '\r', '\\r'), '\"') SEPARATOR '|') ",
+                    "INTO @column_values FROM (SELECT `", col, "` FROM `", tbl, 
                     "` WHERE `", col, "` IS NOT NULL AND `", col, "` != '' LIMIT 2) AS temp_table"
                 );
+                
                 PREPARE stmt FROM @sql;
                 EXECUTE stmt;
                 DEALLOCATE PREPARE stmt;
-            END IF;
-
-            -- Append results if found
-            IF @sensitive_col_result IS NOT NULL AND @sensitive_col_result != '' THEN
-                SET result = CONCAT(result, '\n', @sensitive_col_result);
                 
-                -- Track tables with matches
-                IF LOCATE(CONCAT(',', tbl, ','), CONCAT(',', tables_with_matches, ',')) = 0 THEN
-                    SET v_tables_with_match = v_tables_with_match + 1;
-                    SET tables_with_matches = CONCAT(tables_with_matches, ',', tbl);
+                -- Only process if we found values
+                IF @column_values IS NOT NULL AND @column_values != '' THEN
+                    -- Split the concatenated values and build the result line for each value
+                    SET @value_count = LENGTH(@column_values) - LENGTH(REPLACE(@column_values, '|', '')) + 1;
+                    SET @i = 1;
+                    
+                    WHILE @i <= @value_count DO
+                        SET @current_value = SUBSTRING_INDEX(SUBSTRING_INDEX(@column_values, '|', @i), '|', -1);
+                        
+                        -- Add to result
+                        SET result = CONCAT(result, '\n"', tbl, '","', col, '","', @current_value, '","', @pattern_type, '"');
+                        
+                        -- Track tables with matches
+                        IF LOCATE(CONCAT(',', tbl, ','), CONCAT(',', tables_with_matches, ',')) = 0 THEN
+                            SET v_tables_with_match = v_tables_with_match + 1;
+                            SET tables_with_matches = CONCAT(tables_with_matches, ',', tbl);
+                        END IF;
+                        
+                        SET @i = @i + 1;
+                    END WHILE;
                 END IF;
             END IF;
         END;
@@ -141,11 +152,17 @@ BEGIN
             SET @export_sql = CONCAT(
                 "SELECT '", @csv_content, "' INTO OUTFILE '", @file_path, "'",
                 " FIELDS TERMINATED BY ',' ENCLOSED BY '\"'",
-                " LINES TERMINATED BY '\\n';"
+                " LINES TERMINATED BY '\\r\\n';"
             );
 
             PREPARE stmt FROM @export_sql;
-            EXECUTE stmt;
+            BEGIN
+                DECLARE CONTINUE HANDLER FOR SQLEXCEPTION 
+                BEGIN
+                    SELECT CONCAT('Error exporting file: ', SQLSTATE, ' - ', SQLERRM) AS Message;
+                END;
+                EXECUTE stmt;
+            END;
             DEALLOCATE PREPARE stmt;
 
             SELECT CONCAT('CSV file exported to: ', @file_path) AS Message;
