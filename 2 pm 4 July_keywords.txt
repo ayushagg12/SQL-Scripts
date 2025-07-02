@@ -1,0 +1,156 @@
+DELIMITER $$
+
+DROP PROCEDURE IF EXISTS find_sensitive_data_in_db$$
+
+CREATE PROCEDURE find_sensitive_data_in_db()
+BEGIN
+    DECLARE done INT DEFAULT 0;
+    DECLARE tbl VARCHAR(255);
+    DECLARE col VARCHAR(255);
+    DECLARE col_lower VARCHAR(255);
+    
+    DECLARE v_actual_tables INT DEFAULT 0;
+    DECLARE v_total_columns INT DEFAULT 0;
+    DECLARE v_tables_with_match INT DEFAULT 0;
+    DECLARE v_failed_checks INT DEFAULT 0;
+    
+    DECLARE result TEXT DEFAULT 'table_name,column_name,matched_value,pattern_type';
+    DECLARE tables_with_matches TEXT DEFAULT '';
+    
+    DECLARE cur CURSOR FOR
+        SELECT TABLE_NAME, COLUMN_NAME
+        FROM INFORMATION_SCHEMA.COLUMNS
+        WHERE TABLE_SCHEMA = DATABASE()
+         AND DATA_TYPE IN (
+    'varchar', 'char', 'text', 'longtext', 'mediumtext', 'tinytext', 
+    'json', 'enum', 'set', 'binary', 'varbinary', 'blob', 'longblob', 
+    'mediumblob', 'tinyblob', 'geometry', 'point', 'linestring', 
+    'polygon', 'multipoint', 'multilinestring', 'multipolygon', 
+    'geometrycollection'
+);
+
+    DECLARE CONTINUE HANDLER FOR NOT FOUND SET done = 1;
+
+    SELECT COUNT(DISTINCT TABLE_NAME) INTO v_actual_tables
+    FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE();
+
+    OPEN cur;
+
+    read_loop: LOOP
+        FETCH cur INTO tbl, col;
+        IF done THEN LEAVE read_loop; END IF;
+        
+        SET v_total_columns = v_total_columns + 1;
+        SET col_lower = LOWER(col);
+
+        BEGIN
+            DECLARE CONTINUE HANDLER FOR SQLEXCEPTION 
+            BEGIN
+                SET v_failed_checks = v_failed_checks + 1;
+            END;
+
+            -- Variables to store results
+            SET @sensitive_col_result = NULL;
+            
+            -- Determine pattern type based on column name
+            SET @pattern_type = CASE 
+                WHEN col_lower LIKE '%address%' OR 
+                     col_lower LIKE '%full address%' OR 
+                     col_lower LIKE '%complete address%' OR
+                     col_lower LIKE '%residential address%' OR
+                     col_lower LIKE '%permanent address%' OR
+                     col_lower LIKE '%locality%' OR
+                     col_lower LIKE '%pincode%' OR
+                     col_lower LIKE '%postal code%' OR
+                     col_lower LIKE '%zip%' OR
+                     col_lower LIKE '%zip code%' OR
+                     col_lower LIKE '%city%' OR
+                     col_lower LIKE '%state%' OR
+                     col_lower LIKE '%add%' THEN 'Address'
+                     
+                WHEN col_lower LIKE '%name%' OR 
+                     col_lower LIKE '%nam%' THEN 'Name'
+                     
+                WHEN col_lower LIKE '%date of birth%' OR 
+                     col_lower LIKE '%dob%' OR
+                     col_lower LIKE '%birthdate%' OR
+                     col_lower LIKE '%born on%' THEN 'DOB'
+                     
+                WHEN col_lower LIKE '%account number%' OR 
+                     col_lower LIKE '%acc number%' OR
+                     col_lower LIKE '%bank account%' OR
+                     col_lower LIKE '%account no%' OR
+                     col_lower LIKE '%a/c no%' THEN 'AccountNumber'
+                     
+                WHEN col_lower LIKE '%customer id%' OR 
+                     col_lower LIKE '%cust id%' OR
+                     col_lower LIKE '%customer number%' OR
+                     col_lower LIKE '%cust%' THEN 'CustomerID'
+                     
+                WHEN col_lower LIKE '%national id%' OR 
+                     col_lower LIKE '%identity card%' OR
+                     col_lower LIKE '%proof of identity%' OR
+                     col_lower LIKE '%document number%' THEN 'SensitiveHints'
+                     
+                WHEN col_lower LIKE '%insurance number%' OR 
+                     col_lower LIKE '%policy number%' OR
+                     col_lower LIKE '%insurance id%' OR
+                     col_lower LIKE '%ins id%' THEN 'InsurancePolicy'
+                     
+                ELSE NULL
+            END;
+
+            -- If column name suggests sensitive data, check the first 2 rows
+            IF @pattern_type IS NOT NULL THEN
+                SET @sql = CONCAT(
+                    "SELECT GROUP_CONCAT(DISTINCT CONCAT('\"", tbl, "\",\"", col, "\",\"', ",
+                    "REPLACE(`", col, "`, '\"', '\"\"'), '\",\"", @pattern_type, "\"') SEPARATOR '\n') ",
+                    "INTO @sensitive_col_result FROM (SELECT `", col, "` FROM `", tbl, 
+                    "` WHERE `", col, "` IS NOT NULL AND `", col, "` != '' LIMIT 2) AS temp_table"
+                );
+                PREPARE stmt FROM @sql;
+                EXECUTE stmt;
+                DEALLOCATE PREPARE stmt;
+            END IF;
+
+            -- Append results to output if found
+            IF @sensitive_col_result IS NOT NULL AND @sensitive_col_result != '' THEN
+                SET result = CONCAT(result, '\n', @sensitive_col_result);
+                
+                -- Track tables with matches
+                IF LOCATE(CONCAT(',', tbl, ','), CONCAT(',', tables_with_matches, ',')) = 0 THEN
+                    SET v_tables_with_match = v_tables_with_match + 1;
+                    SET tables_with_matches = CONCAT(tables_with_matches, ',', tbl);
+                END IF;
+            END IF;
+        END;
+    END LOOP;
+
+    CLOSE cur;
+
+    -- Output results
+    IF LENGTH(result) > LENGTH('table_name,column_name,matched_value,pattern_type') THEN
+        SELECT REPLACE(result, '\n', '\r\n') AS CSV_Output;
+    ELSE
+        SELECT CONCAT('No sensitive data found in first 2 rows. Scanned ', v_total_columns, 
+                     ' columns across ', v_actual_tables, ' tables.') AS CSV_Output;
+    END IF;
+
+    -- Output summary
+    SELECT '========================================' AS SummaryLine
+    UNION ALL
+    SELECT CONCAT('Actual Tables in Database: ', v_actual_tables) AS SummaryLine
+    UNION ALL
+    SELECT CONCAT('Columns Scanned: ', v_total_columns) AS SummaryLine
+    UNION ALL
+    SELECT CONCAT('Tables with Sensitive Data: ', v_tables_with_match) AS SummaryLine
+    UNION ALL
+    SELECT CONCAT('Failed Column Scans: ', v_failed_checks) AS SummaryLine
+    UNION ALL
+    SELECT '========================================' AS SummaryLine;
+END$$
+
+DELIMITER ;
+
+CALL find_sensitive_data_in_db();
