@@ -172,4 +172,4 @@ BEGIN
 END$$
 
 DELIMITER ;
-CALL find_sensitive_data_in_db(true);
+
